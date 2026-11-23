@@ -15,18 +15,21 @@ pipeline {
 
     stages {
 
+        // TASK 1: CODE CHECKOUT
         stage('Code Checkout') {
             steps {
                 git branch: "${TARGET_BRANCH}",
                     url: "${REPO_URL}"
 
                 sh '''
+                    echo "===== REPOSITORY DETAILS ====="
                     echo "Repository: django-todo-cicd"
-                    echo "Remote URL:"
+
+                    echo "Remote Repository URL:"
                     git remote get-url origin
 
                     echo "Current Git Branch:"
-                    git branch -r --contains HEAD
+                    git branch --show-current
 
                     echo "Workspace Files:"
                     ls -la
@@ -34,35 +37,51 @@ pipeline {
             }
         }
 
+        // BUILD USING DOCKER AGENT
         stage('Build') {
             agent {
                 docker {
                     image 'python:3.9-slim'
+                    args '-u root:root'
                     reuseNode true
                 }
             }
 
             steps {
                 sh '''
+                    echo "===== BUILD STAGE ====="
+
                     python --version
-                    pip install django==3.2
+
+                    pip install --disable-pip-version-check django==3.2
+
                     python manage.py check
                 '''
+
                 echo 'Build completed successfully'
             }
         }
 
+        // TEST STAGE
         stage('Test') {
             steps {
                 sh '''
+                    echo "===== TEST STAGE ====="
+
                     docker build -t todo-test .
-                    docker run --rm todo-test python manage.py check
+
+                    docker run --rm todo-test \
+                        python manage.py check
                 '''
+
                 echo 'Test stage completed successfully'
             }
         }
 
+        // TASK 3 AND TASK 5:
+        // MULTIPLE CONTAINERS + CONDITIONAL DEPLOYMENT
         stage('Deploy') {
+
             when {
                 expression {
                     env.TARGET_BRANCH == 'develop'
@@ -71,47 +90,78 @@ pipeline {
 
             steps {
                 sh '''
+                    set -e
+
+                    echo "===== DEPLOY STAGE ====="
+
                     docker build -t $IMAGE_NAME .
 
-                    # Remove previous lab containers
+                    echo "Removing previous lab containers..."
+
                     docker rm -f todo_container1 todo_container2 || true
 
-                    # Start two containers
-                    docker run -d \
-                      --name todo_container1 \
-                      -p 8000:8000 $IMAGE_NAME
+                    echo "Starting Container 1..."
 
                     docker run -d \
-                      --name todo_container2 \
-                      -p 8001:8000 $IMAGE_NAME
+                        --name todo_container1 \
+                        -p 8000:8000 \
+                        $IMAGE_NAME
 
-                    echo "Running containers:"
+                    echo "Starting Container 2..."
+
+                    docker run -d \
+                        --name todo_container2 \
+                        -p 8001:8000 \
+                        $IMAGE_NAME
+
+                    echo "===== RUNNING CONTAINERS ====="
                     docker ps
 
-                    sleep 5
+                    echo "Waiting for Django startup..."
+                    sleep 10
 
-                    docker inspect -f '{{.State.Running}}' todo_container1 | grep true
-                    docker inspect -f '{{.State.Running}}' todo_container2 | grep true
+                    echo "===== VERIFY CONTAINERS ====="
 
-                    curl -fsS http://localhost:8000/todos > /dev/null
-                    curl -fsS http://localhost:8001/todos > /dev/null
+                    docker inspect \
+                        -f '{{.State.Running}}' \
+                        todo_container1 | grep true
+
+                    docker inspect \
+                        -f '{{.State.Running}}' \
+                        todo_container2 | grep true
+
+                    echo "===== HTTP VERIFICATION ====="
+
+                    curl -fsS \
+                        http://localhost:8000/todos \
+                        > /dev/null
+
+                    curl -fsS \
+                        http://localhost:8001/todos \
+                        > /dev/null
 
                     echo "Both containers are running successfully"
+
+                    echo "Container 1: Port 8000"
+                    echo "Container 2: Port 8001"
                 '''
             }
 
             post {
                 always {
-                    echo 'Stopping and removing deployed containers'
+                    echo '===== CONTAINER CLEANUP ====='
 
                     sh '''
                         docker rm -f todo_container1 todo_container2 || true
+
+                        echo "Both lab containers cleaned up"
                     '''
                 }
             }
         }
     }
 
+    // TASK 2: PIPELINE FAILURE HANDLING
     post {
         success {
             echo 'Pipeline executed successfully'
