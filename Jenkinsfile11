@@ -1,41 +1,128 @@
+
 pipeline {
-  agent any
+    agent any
 
-  stages {
-      stage('Build') {
-      agent {
-        docker { image 'django:latest' }
-      }
-      steps {
-            // Run the Django server in the foreground
-            sh 'python3 manage.py check' 
-            echo 'Django server started. Proceeding to next stage...'
-      }
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
     }
 
-    stage('Deploy') {
-      steps {
-        // Build the image
-        sh 'docker build -t todo .'
-        
-        // Run the container with a specific name (e.g., 'todo_container')
-        sh 'docker run -d -p 8000:8000 --name todo_container todo'
-      }
-      post {
-        always {
-          echo 'Waiting for 2 minutes before stopping and deleting containers...'
-          // Sleep for 2 minutes before stopping and deleting containers
-          sleep 120
+    environment {
+        REPO_URL = 'https://github.com/ranaaalihaider/django-todo-cicd.git'
+        TARGET_BRANCH = 'develop'
+        IMAGE_NAME = 'todo'
+    }
 
-          // Stop the container using its name
-          echo 'Stopping container...'
-          sh 'docker stop todo_container'
+    stages {
 
-          // Remove the container
-          echo 'Removing container...'
-          sh 'docker rm todo_container'
+        stage('Code Checkout') {
+            steps {
+                git branch: "${TARGET_BRANCH}",
+                    url: "${REPO_URL}"
+
+                sh '''
+                    echo "Repository: django-todo-cicd"
+                    echo "Remote URL:"
+                    git remote get-url origin
+
+                    echo "Current Git Branch:"
+                    git branch -r --contains HEAD
+
+                    echo "Workspace Files:"
+                    ls -la
+                '''
+            }
         }
-      }
+
+        stage('Build') {
+            agent {
+                docker {
+                    image 'python:3.9-slim'
+                    reuseNode true
+                }
+            }
+
+            steps {
+                sh '''
+                    python --version
+                    pip install django==3.2
+                    python manage.py check
+                '''
+                echo 'Build completed successfully'
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh '''
+                    docker build -t todo-test .
+                    docker run --rm todo-test python manage.py check
+                '''
+                echo 'Test stage completed successfully'
+            }
+        }
+
+        stage('Deploy') {
+            when {
+                expression {
+                    env.TARGET_BRANCH == 'develop'
+                }
+            }
+
+            steps {
+                sh '''
+                    docker build -t $IMAGE_NAME .
+
+                    # Remove previous lab containers
+                    docker rm -f todo_container1 todo_container2 || true
+
+                    # Start two containers
+                    docker run -d \
+                      --name todo_container1 \
+                      -p 8000:8000 $IMAGE_NAME
+
+                    docker run -d \
+                      --name todo_container2 \
+                      -p 8001:8000 $IMAGE_NAME
+
+                    echo "Running containers:"
+                    docker ps
+
+                    sleep 5
+
+                    docker inspect -f '{{.State.Running}}' todo_container1 | grep true
+                    docker inspect -f '{{.State.Running}}' todo_container2 | grep true
+
+                    curl -fsS http://localhost:8000/todos > /dev/null
+                    curl -fsS http://localhost:8001/todos > /dev/null
+
+                    echo "Both containers are running successfully"
+                '''
+            }
+
+            post {
+                always {
+                    echo 'Stopping and removing deployed containers'
+
+                    sh '''
+                        docker rm -f todo_container1 todo_container2 || true
+                    '''
+                }
+            }
+        }
     }
-  }
+
+    post {
+        success {
+            echo 'Pipeline executed successfully'
+        }
+
+        failure {
+            echo 'Pipeline execution failed'
+        }
+
+        always {
+            echo 'Pipeline execution completed'
+        }
+    }
 }
